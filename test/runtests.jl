@@ -29,6 +29,7 @@ using Test
     @testset "buscar() valida filtro mínimo" begin
         # Cliente fake só pra testar a validação local (não faz HTTP)
         client = RadarDOUClient("fake_key_apenas_para_teste_local")
-        @test_throws RadarDOUError buscar(client)
+        # Tipo qualificado: RadarDOUError nao e exportado, so vive dentro do modulo RadarDOU
+        @test_throws RadarDOU.RadarDOUError buscar(client)
     end
 end
