@@ -1,19 +1,24 @@
 """
     RadarDOU
 
-SDK oficial Julia para a API do Radar DOU - Sistema de Monitoramento do Diário Oficial da União.
+SDK oficial Julia para a API do Radar DOU - Sistema de Monitoramento do Diario Oficial da Uniao.
 
-# Exemplo de uso
+# Exemplo
 ```julia
 using RadarDOU
 
-# Criar cliente
-client = RadarDOUClient("sua_api_key")
+# Carregue a chave de variavel de ambiente
+api_key = ENV["RADAR_API_KEY"]
+client = RadarDOUClient(api_key)
 
-# Buscar publicações
-resultado = buscar(client, "licitação")
+# Pelo menos um filtro e obrigatorio
+resultado = buscar(client; date_from="2026-05-01", limit=10)
+println("Total: ", resultado["pagination"]["total"])
 
-# Encerrar sessão
+# Detalhes de uma publicacao (texto completo)
+pub = obter_publicacao(client, resultado["data"][1]["id"])
+println(pub["texto_puro"])
+
 close(client)
 ```
 """
@@ -24,10 +29,13 @@ using JSON3
 using SHA
 using Dates
 
-export RadarDOUClient, buscar, obter_publicacao, listar_alertas, criar_alerta,
-       atualizar_alerta, excluir_alerta, obter_uso, obter_conta, validar_sessao
+export RadarDOUClient, buscar, obter_publicacao,
+       listar_alertas, criar_alerta,
+       listar_favoritos, adicionar_favorito, remover_favorito,
+       listar_colecoes, criar_colecao, vocabulario,
+       validar_sessao
 
-# Exceções
+# Excecoes
 struct RadarDOUError <: Exception
     message::String
     code::String
@@ -55,20 +63,14 @@ Base.showerror(io::IO, e::AuthenticationError) = print(io, "AuthenticationError:
 Base.showerror(io::IO, e::SessionConflictError) = print(io, "SessionConflictError: $(e.message)")
 Base.showerror(io::IO, e::RateLimitError) = print(io, "RateLimitError: $(e.message)")
 
-const SDK_VERSION = "1.0.0"
-const DEFAULT_BASE_URL = "https://api.radar-dou.com/v1"
+const SDK_VERSION = "1.0.1"
+const DEFAULT_BASE_URL = "https://www.radar-dou.com/api/v1"
 const DEFAULT_TIMEOUT = 30
 
 """
-    RadarDOUClient
+    RadarDOUClient(api_key; base_url=..., timeout=30, auto_session=true)
 
 Cliente para a API do Radar DOU.
-
-# Argumentos
-- `api_key::String`: Sua API Key de assinante
-- `base_url::String`: URL base da API (padrão: https://api.radar-dou.com/v1)
-- `timeout::Int`: Timeout em segundos (padrão: 30)
-- `auto_session::Bool`: Iniciar sessão automaticamente (padrão: true)
 """
 mutable struct RadarDOUClient
     api_key::String
@@ -86,7 +88,7 @@ mutable struct RadarDOUClient
     )
         if isempty(api_key)
             throw(AuthenticationError(
-                "API Key é obrigatória. Obtenha sua chave em https://radar-dou.com/api-keys",
+                "API Key e obrigatoria. Obtenha em https://www.radar-dou.com/api-keys",
                 "API_KEY_REQUIRED"
             ))
         end
@@ -107,7 +109,7 @@ mutable struct RadarDOUClient
                 if e isa SessionConflictError
                     rethrow()
                 end
-                # Outros erros são ignorados no startup
+                # Outros erros sao ignorados (chave funciona sem sessao)
             end
         end
 
@@ -115,7 +117,6 @@ mutable struct RadarDOUClient
     end
 end
 
-# Gera fingerprint do dispositivo
 function generate_fingerprint()
     info = join([
         gethostname(),
@@ -126,7 +127,6 @@ function generate_fingerprint()
     bytes2hex(sha256(info))[1:32]
 end
 
-# Faz requisição para a API
 function _request(
     client::RadarDOUClient,
     method::Symbol,
@@ -136,7 +136,6 @@ function _request(
 )
     url = client.base_url * endpoint
 
-    # Adiciona query params
     if !isnothing(query) && !isempty(query)
         params = join(["$k=$(HTTP.escapeuri(string(v)))" for (k, v) in query if !isnothing(v)], "&")
         url *= "?" * params
@@ -161,7 +160,7 @@ function _request(
         elseif method == :DELETE
             HTTP.delete(url, headers; readtimeout=client.timeout)
         else
-            error("Método HTTP não suportado: $method")
+            error("Metodo HTTP nao suportado: $method")
         end
 
         return JSON3.read(String(response.body))
@@ -172,21 +171,23 @@ function _request(
             data = try
                 JSON3.read(String(e.response.body))
             catch
-                Dict("message" => "Erro desconhecido")
+                Dict("error" => "Erro desconhecido")
             end
-
             handle_error(status, data)
         else
-            throw(RadarDOUError("Erro de conexão: $(e)", "CONNECTION_ERROR", nothing))
+            throw(RadarDOUError("Erro de conexao: $(e)", "CONNECTION_ERROR", nothing))
         end
     end
 end
 
 function handle_error(status::Int, data)
-    message = get(data, :message, "Erro desconhecido")
+    # Backend usa "error" como chave principal
+    message = get(data, :error, get(data, :message, "Erro desconhecido"))
     code = get(data, :code, "UNKNOWN_ERROR")
 
-    if status == 401
+    if status == 400
+        throw(RadarDOUError(message, code, get(data, :details, nothing)))
+    elseif status == 401
         throw(AuthenticationError(message, code))
     elseif status == 403
         if code == "SESSION_CONFLICT"
@@ -204,7 +205,6 @@ function handle_error(status::Int, data)
     end
 end
 
-# Inicia sessão
 function start_session!(client::RadarDOUClient)
     client.device_fingerprint = generate_fingerprint()
 
@@ -223,7 +223,6 @@ function start_session!(client::RadarDOUClient)
 
     client.session_id = result[:session_id]
 
-    # Inicia heartbeat em background
     interval = get(result, :heartbeat_interval, 30)
     start_heartbeat!(client, interval)
 
@@ -240,149 +239,171 @@ function start_heartbeat!(client::RadarDOUClient, interval::Int)
                     "device_fingerprint" => client.device_fingerprint
                 ))
             catch
-                # Ignora erros de heartbeat
             end
         end
     end
 end
 
 """
-    buscar(client, termo; kwargs...)
+    buscar(client; query=nothing, date_from=nothing, date_to=nothing, secao=nothing, tipo=nothing, page=1, limit=20)
 
-Busca publicações no DOU.
+Busca publicacoes no DOU. Pelo menos um filtro e obrigatorio.
 
-# Argumentos
-- `client::RadarDOUClient`: Cliente RadarDOU
-- `termo::String`: Termo de busca
-- `data_inicio::Union{String, Nothing}`: Data inicial (YYYY-MM-DD)
-- `data_fim::Union{String, Nothing}`: Data final (YYYY-MM-DD)
-- `orgao::Union{String, Nothing}`: Filtrar por órgão
-- `tipo::Union{String, Nothing}`: Tipo de publicação
-- `secao::Union{Int, Nothing}`: Seção do DOU (1, 2 ou 3)
-- `pagina::Int`: Número da página (padrão: 1)
-- `limite::Int`: Quantidade por página (padrão: 20, máx: 100)
-
-# Retorna
-Dict com resultados da busca
+# Exemplo
+```julia
+buscar(client; date_from="2026-05-01", limit=10)
+buscar(client; query="licitacao", date_from="2026-05-01")
+buscar(client; query="edital", secao="DO3", tipo="Edital",
+        date_from="2026-01-01", date_to="2026-05-08")
+```
 """
 function buscar(
-    client::RadarDOUClient,
-    termo::String;
-    data_inicio::Union{String, Nothing} = nothing,
-    data_fim::Union{String, Nothing} = nothing,
-    orgao::Union{String, Nothing} = nothing,
+    client::RadarDOUClient;
+    query::Union{String, Nothing} = nothing,
+    date_from::Union{String, Nothing} = nothing,
+    date_to::Union{String, Nothing} = nothing,
+    secao::Union{String, Nothing} = nothing,
     tipo::Union{String, Nothing} = nothing,
-    secao::Union{Int, Nothing} = nothing,
-    pagina::Int = 1,
-    limite::Int = 20
+    page::Int = 1,
+    limit::Int = 20
 )
-    query = Dict(
-        "q" => termo,
-        "pagina" => pagina,
-        "limite" => min(limite, 100)
-    )
+    if isnothing(query) && isnothing(date_from) && isnothing(date_to) &&
+       isnothing(secao) && isnothing(tipo)
+        throw(RadarDOUError(
+            "Pelo menos um filtro e obrigatorio: query, date_from, date_to, secao ou tipo.",
+            "FILTER_REQUIRED",
+            nothing
+        ))
+    end
 
-    !isnothing(data_inicio) && (query["data_inicio"] = data_inicio)
-    !isnothing(data_fim) && (query["data_fim"] = data_fim)
-    !isnothing(orgao) && (query["orgao"] = orgao)
-    !isnothing(tipo) && (query["tipo"] = tipo)
-    !isnothing(secao) && (query["secao"] = secao)
+    q = Dict("page" => page, "limit" => min(limit, 100))
+    !isnothing(query)     && (q["query"]     = query)
+    !isnothing(date_from) && (q["date_from"] = date_from)
+    !isnothing(date_to)   && (q["date_to"]   = date_to)
+    !isnothing(secao)     && (q["secao"]     = secao)
+    !isnothing(tipo)      && (q["tipo"]      = tipo)
 
-    _request(client, :GET, "/search"; query = query)
+    _request(client, :GET, "/publications"; query = q)
 end
 
 """
     obter_publicacao(client, id)
 
-Obtém detalhes de uma publicação específica.
+Detalhes completos da publicacao (texto_html e texto_puro inclusos).
 """
-function obter_publicacao(client::RadarDOUClient, id::String)
-    _request(client, :GET, "/publicacoes/$id")
+function obter_publicacao(client::RadarDOUClient, id)
+    _request(client, :GET, "/publications/$id")
 end
 
 """
-    listar_alertas(client)
-
-Lista todos os alertas configurados.
+    listar_alertas(client; page=1, limit=20, active_only=false)
 """
-function listar_alertas(client::RadarDOUClient)
-    _request(client, :GET, "/alertas")
+function listar_alertas(
+    client::RadarDOUClient;
+    page::Int = 1,
+    limit::Int = 20,
+    active_only::Bool = false
+)
+    q = Dict("page" => page, "limit" => min(limit, 100))
+    active_only && (q["active"] = "true")
+    _request(client, :GET, "/alerts"; query = q)
 end
 
 """
-    criar_alerta(client, nome, termos; kwargs...)
+    criar_alerta(client, name, search_criteria; kwargs...)
 
-Cria um novo alerta de monitoramento.
+# Exemplo
+```julia
+criar_alerta(client, "Concursos TI",
+    Dict("query" => "desenvolvedor", "secao" => "DO3");
+    frequency="daily")
+```
 """
 function criar_alerta(
     client::RadarDOUClient,
-    nome::String,
-    termos::Vector{String};
-    orgaos::Union{Vector{String}, Nothing} = nothing,
-    tipos::Union{Vector{String}, Nothing} = nothing,
-    secoes::Union{Vector{Int}, Nothing} = nothing,
-    email_notificacao::Bool = true
+    name::String,
+    search_criteria::Dict;
+    description::Union{String, Nothing} = nothing,
+    frequency::String = "daily",
+    email_notification::Bool = true,
+    sound_alert::Bool = false
 )
     body = Dict(
-        "nome" => nome,
-        "termos" => termos,
-        "email_notificacao" => email_notificacao
+        "name" => name,
+        "searchCriteria" => search_criteria,
+        "frequency" => frequency,
+        "emailNotification" => email_notification,
+        "soundAlert" => sound_alert
     )
-
-    !isnothing(orgaos) && (body["orgaos"] = orgaos)
-    !isnothing(tipos) && (body["tipos"] = tipos)
-    !isnothing(secoes) && (body["secoes"] = secoes)
-
-    _request(client, :POST, "/alertas"; body = body)
+    !isnothing(description) && (body["description"] = description)
+    _request(client, :POST, "/alerts"; body = body)
 end
 
 """
-    atualizar_alerta(client, id; kwargs...)
-
-Atualiza um alerta existente.
+    listar_favoritos(client; page=1, limit=20)
 """
-function atualizar_alerta(client::RadarDOUClient, id::String; kwargs...)
-    body = Dict(string(k) => v for (k, v) in kwargs)
-    _request(client, :PATCH, "/alertas/$id"; body = body)
+function listar_favoritos(client::RadarDOUClient; page::Int = 1, limit::Int = 20)
+    _request(client, :GET, "/favorites";
+             query = Dict("page" => page, "limit" => min(limit, 100)))
 end
 
 """
-    excluir_alerta(client, id)
-
-Exclui um alerta.
+    adicionar_favorito(client, publication_id; notes=nothing)
 """
-function excluir_alerta(client::RadarDOUClient, id::String)
-    _request(client, :DELETE, "/alertas/$id")
+function adicionar_favorito(
+    client::RadarDOUClient,
+    publication_id::String;
+    notes::Union{String, Nothing} = nothing
+)
+    body = Dict("publicationId" => publication_id)
+    !isnothing(notes) && (body["notes"] = notes)
+    _request(client, :POST, "/favorites"; body = body)
 end
 
 """
-    obter_uso(client)
-
-Obtém informações de uso da API.
+    remover_favorito(client, publication_id)
 """
-function obter_uso(client::RadarDOUClient)
-    _request(client, :GET, "/uso")
+function remover_favorito(client::RadarDOUClient, publication_id::String)
+    _request(client, :DELETE, "/favorites";
+             query = Dict("publicationId" => publication_id))
 end
 
 """
-    obter_conta(client)
-
-Obtém informações da conta.
+    listar_colecoes(client)
 """
-function obter_conta(client::RadarDOUClient)
-    _request(client, :GET, "/conta")
+function listar_colecoes(client::RadarDOUClient)
+    _request(client, :GET, "/collections")
+end
+
+"""
+    criar_colecao(client, name; description=nothing)
+"""
+function criar_colecao(
+    client::RadarDOUClient,
+    name::String;
+    description::Union{String, Nothing} = nothing
+)
+    body = Dict("name" => name)
+    !isnothing(description) && (body["description"] = description)
+    _request(client, :POST, "/collections"; body = body)
+end
+
+"""
+    vocabulario(client)
+
+Lista vocabulario do DOU (secoes, tipos de ato).
+"""
+function vocabulario(client::RadarDOUClient)
+    _request(client, :GET, "/vocabulary")
 end
 
 """
     validar_sessao(client)
-
-Valida se a sessão atual é válida.
 """
 function validar_sessao(client::RadarDOUClient)
     if isnothing(client.session_id)
         return false
     end
-
     try
         result = _request(client, :POST, "/session/validate"; body = Dict(
             "session_id" => client.session_id,
@@ -397,10 +418,9 @@ end
 """
     Base.close(client)
 
-Encerra a sessão e libera recursos.
+Encerra a sessao e libera recursos.
 """
 function Base.close(client::RadarDOUClient)
-    # Para o heartbeat
     if !isnothing(client.heartbeat_task)
         try
             schedule(client.heartbeat_task, InterruptException(); error=true)
@@ -409,14 +429,12 @@ function Base.close(client::RadarDOUClient)
         client.heartbeat_task = nothing
     end
 
-    # Encerra sessão
     if !isnothing(client.session_id)
         try
             _request(client, :POST, "/session/end"; body = Dict(
                 "session_id" => client.session_id
             ))
         catch
-            # Ignora erros ao encerrar
         end
         client.session_id = nothing
     end

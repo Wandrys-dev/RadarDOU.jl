@@ -1,153 +1,137 @@
 # RadarDOU.jl
 
-SDK oficial Julia para a API do [Radar DOU](https://radar-dou.com) - Sistema de Monitoramento do Diário Oficial da União.
+SDK oficial Julia para a API do [Radar DOU](https://www.radar-dou.com) — Sistema de Monitoramento do Diário Oficial da União.
 
 ## Requisitos
 
-- Julia 1.6+
-- API Key válida de assinante do Radar DOU
+- Julia >= 1.6
+- API Key válida de assinante (gere em [www.radar-dou.com/api-keys](https://www.radar-dou.com/api-keys))
 
 ## Instalação
 
 ```julia
-# Adicionar o pacote (quando disponível no registry)
-# using Pkg
-# Pkg.add("RadarDOU")
-
-# Ou instalar do GitHub
 using Pkg
-Pkg.add(url="https://github.com/radar-dou/RadarDOU.jl")
+Pkg.add(url="https://github.com/Wandrys-dev/RadarDOU.jl")
 ```
 
-## Início Rápido
+## Início rápido
 
 ```julia
 using RadarDOU
 
-# Criar cliente com sua API Key
-client = RadarDOUClient("sua_api_key_aqui")
+# Carregue a chave de variavel de ambiente
+api_key = ENV["RADAR_API_KEY"]
+client = RadarDOUClient(api_key)
 
-# Buscar publicações
-resultado = buscar(client, "licitação")
-println("Encontrados $(resultado[:total]) resultados")
+# IMPORTANTE: pelo menos um filtro e obrigatorio
+resultado = buscar(client; date_from="2026-05-01", limit=10)
 
-# Ao finalizar, encerre a sessão
+println("Total: ", resultado["pagination"]["total"])
+for pub in resultado["data"]
+    println("[$(pub["secao_codigo"])] $(pub["titulo"])")
+end
+
 close(client)
 ```
 
-## Funcionalidades
-
-### Busca de Publicações
+## Buscar publicações
 
 ```julia
-# Busca simples
-resultado = buscar(client, "edital")
+# Por data
+buscar(client; date_from="2026-05-01", date_to="2026-05-08")
 
-# Busca com filtros
-resultado = buscar(
-    client,
-    "pregão eletrônico";
-    data_inicio = "2024-01-01",
-    data_fim = "2024-12-31",
-    orgao = "Ministério da Educação",
-    tipo = "edital",
-    secao = 3,
-    pagina = 1,
-    limite = 50
-)
+# Por palavra-chave
+buscar(client; query="licitação", date_from="2026-05-01")
 
-# Obter publicação específica
-publicacao = obter_publicacao(client, "abc123")
+# Filtros combinados
+buscar(client;
+    query="edital",
+    secao="DO3",          # DO1, DO2, DO3 ou Extra
+    tipo="Edital",        # Portaria, Edital, Despacho, etc.
+    date_from="2026-01-01",
+    date_to="2026-05-08",
+    page=1,
+    limit=50)              # máx 100
 ```
 
-### Gerenciamento de Alertas
+**Filtro mínimo obrigatório.** Chamar `buscar(client)` sem nenhum filtro lança
+`RadarDOUError("FILTER_REQUIRED")`. Isso evita scans amplos da tabela (~7M+ linhas).
+
+## Detalhes de uma publicação
+
+A listagem retorna apenas `texto_resumo`. Para o **texto completo**:
 
 ```julia
-# Listar alertas
+ids = [p["id"] for p in resultado["data"]]
+for id in ids
+    pub = obter_publicacao(client, id)
+    println(pub["titulo"])
+    println(pub["texto_puro"])    # texto completo
+end
+```
+
+## Alertas
+
+```julia
+# Listar
 alertas = listar_alertas(client)
 
-# Criar alerta
-alerta = criar_alerta(
-    client,
-    "Monitorar Licitações Saúde",
-    ["licitação", "pregão"];
-    orgaos = ["Ministério da Saúde"],
-    email_notificacao = true
-)
-
-# Atualizar alerta
-atualizar_alerta(client, alerta[:id]; nome = "Novo Nome")
-
-# Excluir alerta
-excluir_alerta(client, alerta[:id])
+# Criar
+criar_alerta(client, "Concursos TI",
+    Dict("query" => "desenvolvedor", "secao" => "DO3");
+    frequency="daily",
+    email_notification=true)
 ```
 
-### Informações de Uso
+## Favoritos e coleções
 
 ```julia
-# Ver uso da API
-uso = obter_uso(client)
-println("Requisições hoje: $(uso[:requisicoes_hoje])")
-println("Limite por hora: $(uso[:limite_hora])")
+listar_favoritos(client)
+adicionar_favorito(client, "12345")
+remover_favorito(client, "12345")
 
-# Informações da conta
-conta = obter_conta(client)
-println("Plano: $(conta[:plano])")
+listar_colecoes(client)
+criar_colecao(client, "Editais 2026")
 ```
 
-## Controle de Sessão
+## Vocabulário
 
-O SDK implementa controle automático de sessão para garantir que sua API Key seja usada apenas por você:
+```julia
+vocab = vocabulario(client)  # seções e tipos disponíveis
+```
 
-- **Fingerprint de dispositivo**: Identifica unicamente seu computador
-- **Heartbeat automático**: Mantém sua sessão ativa em background
-- **Detecção de uso compartilhado**: Impede que outros usem sua API Key simultaneamente
-
-### Tratamento de Erros
+## Tratamento de erros
 
 ```julia
 using RadarDOU
 
 try
-    client = RadarDOUClient("sua_api_key")
-    resultado = buscar(client, "teste")
+    client = RadarDOUClient(ENV["RADAR_API_KEY"])
+    resultado = buscar(client; date_from="2026-05-01")
 catch e
-    if e isa RadarDOU.AuthenticationError
-        println("Erro de autenticação: $(e.message)")
-    elseif e isa RadarDOU.SessionConflictError
-        println("Conflito de sessão: $(e.message)")
-        println("IP ativo: $(e.active_ip)")
-    elseif e isa RadarDOU.RateLimitError
-        println("Limite atingido: $(e.message)")
+    if e isa AuthenticationError
+        println("Chave invalida ou expirada")
+    elseif e isa SessionConflictError
+        println("Outra sessao ja ativa em $(e.active_ip)")
+    elseif e isa RateLimitError
+        println("Rate limit. Reset em $(e.reset_at)")
+    elseif e isa RadarDOUError
+        println("Erro $(e.code): $(e.message)")
     else
-        println("Erro: $e")
+        rethrow()
     end
 end
 ```
 
-## Limites por Plano
+## Limites por plano
 
-| Plano | Requisições/hora | Sessões Simultâneas |
-|-------|------------------|---------------------|
-| Profissional | 1.000 | 1 |
-| Premium | 5.000 | 3 |
-| Enterprise | Ilimitado | Ilimitado |
-
-## Obtenha sua API Key
-
-Para usar este SDK, você precisa de uma API Key válida:
-
-1. Acesse [radar-dou.com](https://radar-dou.com)
-2. Crie uma conta ou faça login
-3. Assine um plano
-4. Gere sua API Key em [Configurações > API Keys](https://radar-dou.com/api-keys)
-
-## Suporte
-
-- 📧 Email: suporte@radar-dou.com
-- 📖 Documentação: [radar-dou.com/docs](https://radar-dou.com/docs)
-- 🐛 Issues: [GitHub Issues](https://github.com/radar-dou/RadarDOU.jl/issues)
+| Plano | Rate limit | Sessões | Chaves |
+|-------|-----------|---------|--------|
+| Trial (5 dias) | 100 req/h | 1 | 1 |
+| Profissional | 1.000 req/h | 1 | 2 |
+| Premium | 5.000 req/h | 3 | 5 |
+| Empresarial | 10.000 req/h | 10 | 10 |
 
 ## Licença
 
-MIT License - veja [LICENSE](LICENSE) para detalhes.
+MIT
