@@ -276,7 +276,7 @@ function buscar(
         ))
     end
 
-    q = Dict("page" => page, "limit" => min(limit, 100))
+    q = Dict{String, Any}("page" => page, "limit" => min(limit, 100))
     !isnothing(query)     && (q["query"]     = query)
     !isnothing(date_from) && (q["date_from"] = date_from)
     !isnothing(date_to)   && (q["date_to"]   = date_to)
@@ -304,7 +304,7 @@ function listar_alertas(
     limit::Int = 20,
     active_only::Bool = false
 )
-    q = Dict("page" => page, "limit" => min(limit, 100))
+    q = Dict{String, Any}("page" => page, "limit" => min(limit, 100))
     active_only && (q["active"] = "true")
     _request(client, :GET, "/alerts"; query = q)
 end
@@ -344,7 +344,7 @@ end
 """
 function listar_favoritos(client::RadarDOUClient; page::Int = 1, limit::Int = 20)
     _request(client, :GET, "/favorites";
-             query = Dict("page" => page, "limit" => min(limit, 100)))
+             query = Dict{String, Any}("page" => page, "limit" => min(limit, 100)))
 end
 
 """
