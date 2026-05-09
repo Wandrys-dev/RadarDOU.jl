@@ -1,31 +1,29 @@
 # RadarDOU.jl
 
-Official Julia SDK for the [Radar DOU](https://www.radar-dou.com) API — Monitoring system for Brazil's Official Federal Gazette (*Diário Oficial da União*).
+SDK oficial Julia para a API do [Radar DOU](https://www.radar-dou.com) — Sistema de Monitoramento do Diário Oficial da União.
 
-A Portuguese version of this README is available at [README.pt-BR.md](README.pt-BR.md).
-
-## Requirements
+## Requisitos
 
 - Julia >= 1.6
-- A valid subscriber API key (generate one at [www.radar-dou.com/api-keys](https://www.radar-dou.com/api-keys))
+- API Key válida de assinante (gere em [www.radar-dou.com/api-keys](https://www.radar-dou.com/api-keys))
 
-## Installation
+## Instalação
 
 ```julia
 using Pkg
 Pkg.add(url="https://github.com/Wandrys-dev/RadarDOU.jl")
 ```
 
-## Quick start
+## Início rápido
 
 ```julia
 using RadarDOU
 
-# Load the key from an environment variable
+# Carregue a chave de variavel de ambiente
 api_key = ENV["RADAR_API_KEY"]
 client = RadarDOUClient(api_key)
 
-# IMPORTANT: at least one filter is required
+# IMPORTANTE: pelo menos um filtro e obrigatorio
 resultado = buscar(client; date_from="2026-05-01", limit=10)
 
 println("Total: ", resultado["pagination"]["total"])
@@ -36,57 +34,56 @@ end
 close(client)
 ```
 
-## Searching publications
+## Buscar publicações
 
 ```julia
-# By date
+# Por data
 buscar(client; date_from="2026-05-01", date_to="2026-05-08")
 
-# By keyword
+# Por palavra-chave
 buscar(client; query="licitação", date_from="2026-05-01")
 
-# Combined filters
+# Filtros combinados
 buscar(client;
     query="edital",
-    secao="DO3",          # DO1, DO2, DO3, or Extra
+    secao="DO3",          # DO1, DO2, DO3 ou Extra
     tipo="Edital",        # Portaria, Edital, Despacho, etc.
     date_from="2026-01-01",
     date_to="2026-05-08",
     page=1,
-    limit=50)              # max 100
+    limit=50)              # máx 100
 ```
 
-**At least one filter is required.** Calling `buscar(client)` with no filters
-throws `RadarDOUError("FILTER_REQUIRED")`. This prevents broad scans of the
-table (~7M+ rows).
+**Filtro mínimo obrigatório.** Chamar `buscar(client)` sem nenhum filtro lança
+`RadarDOUError("FILTER_REQUIRED")`. Isso evita scans amplos da tabela (~7M+ linhas).
 
-## Publication details
+## Detalhes de uma publicação
 
-The listing endpoint only returns `texto_resumo`. For the **full text**:
+A listagem retorna apenas `texto_resumo`. Para o **texto completo**:
 
 ```julia
 ids = [p["id"] for p in resultado["data"]]
 for id in ids
     pub = obter_publicacao(client, id)
     println(pub["titulo"])
-    println(pub["texto_puro"])    # full text
+    println(pub["texto_puro"])    # texto completo
 end
 ```
 
-## Alerts
+## Alertas
 
 ```julia
-# List
+# Listar
 alertas = listar_alertas(client)
 
-# Create
+# Criar
 criar_alerta(client, "Concursos TI",
     Dict("query" => "desenvolvedor", "secao" => "DO3");
     frequency="daily",
     email_notification=true)
 ```
 
-## Favorites and collections
+## Favoritos e coleções
 
 ```julia
 listar_favoritos(client)
@@ -97,13 +94,13 @@ listar_colecoes(client)
 criar_colecao(client, "Editais 2026")
 ```
 
-## Vocabulary
+## Vocabulário
 
 ```julia
-vocab = vocabulario(client)  # available sections and types
+vocab = vocabulario(client)  # seções e tipos disponíveis
 ```
 
-## Error handling
+## Tratamento de erros
 
 ```julia
 using RadarDOU
@@ -113,28 +110,28 @@ try
     resultado = buscar(client; date_from="2026-05-01")
 catch e
     if e isa AuthenticationError
-        println("Invalid or expired key")
+        println("Chave invalida ou expirada")
     elseif e isa SessionConflictError
-        println("Another session is already active at $(e.active_ip)")
+        println("Outra sessao ja ativa em $(e.active_ip)")
     elseif e isa RateLimitError
-        println("Rate limit. Reset at $(e.reset_at)")
+        println("Rate limit. Reset em $(e.reset_at)")
     elseif e isa RadarDOUError
-        println("Error $(e.code): $(e.message)")
+        println("Erro $(e.code): $(e.message)")
     else
         rethrow()
     end
 end
 ```
 
-## Plan limits
+## Limites por plano
 
-| Plan | Rate limit | Sessions | Keys |
+| Plano | Rate limit | Sessões | Chaves |
 |-------|-----------|---------|--------|
-| Trial (5 days) | 100 req/h | 1 | 1 |
-| Professional | 1,000 req/h | 1 | 2 |
-| Premium | 5,000 req/h | 3 | 5 |
-| Enterprise | 10,000 req/h | 10 | 10 |
+| Trial (5 dias) | 100 req/h | 1 | 1 |
+| Profissional | 1.000 req/h | 1 | 2 |
+| Premium | 5.000 req/h | 3 | 5 |
+| Empresarial | 10.000 req/h | 10 | 10 |
 
-## License
+## Licença
 
 MIT
